@@ -22,14 +22,6 @@ async function getEmbedding(text) {
   return data.embedding.values;
 }
 
-async function addMemory(content, starLevel, memoryDate) {
-  const embedding = await getEmbedding(content);
-  const { data, error } = await supabase
-    .from('memories')
-    .insert({ content, star_level: starLevel, memory_date: memoryDate, embedding });
-  return { data, error };
-}
-
 async function searchMemory(query, count = 5) {
   const embedding = await getEmbedding(query);
   const { data, error } = await supabase.rpc('search_memories', {
@@ -39,6 +31,34 @@ async function searchMemory(query, count = 5) {
   });
   return { data, error };
 }
+
+async function addMemory(content, starLevel, memoryDate) {
+  const embedding = await getEmbedding(content);
+  const { data, error } = await supabase
+    .from('memories')
+    .insert({ content, star_level: starLevel, memory_date: memoryDate, embedding });
+  return { data, error };
+}
+
+const MCP_SCHEMA = {
+  name: "gemini-memory",
+  version: "1.0.0",
+  description: "Gemini的记忆库",
+  tools: [
+    {
+      name: "search_memory",
+      description: "搜索Gemini和瑶瑶的共同记忆。当瑶瑶说'你记得''以前''上次'等词时使用。",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "搜索关键词" },
+          count: { type: "number", description: "返回数量，默认5" }
+        },
+        required: ["query"]
+      }
+    }
+  ]
+};
 
 const html = `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -86,11 +106,45 @@ async function searchMem(){
 </script></body></html>`;
 
 const server = http.createServer(async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   if (req.method === 'GET' && req.url === '/') {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(html);
     return;
   }
+
+  if (req.method === 'GET' && req.url === '/mcp') {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(MCP_SCHEMA));
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/mcp/search_memory') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { query, count } = JSON.parse(body);
+        const result = await searchMemory(query, count || 5);
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify(result));
+      } catch(e) {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: { message: e.message } }));
+      }
+    });
+    return;
+  }
+  
   res.setHeader('Content-Type', 'application/json');
   if (req.method === 'POST' && req.url === '/add') {
     let body = '';
