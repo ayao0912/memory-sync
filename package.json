@@ -7,6 +7,6 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
-    "@google/generative-ai": "^0.2.0"
+    "@google/genai": "^1.0.0"
   }
 }
