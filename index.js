@@ -12,9 +12,7 @@ async function getEmbedding(text) {
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: { parts: [{ text: text }] }
-      })
+      body: JSON.stringify({ content: { parts: [{ text }] } })
     }
   );
   const data = await response.json();
@@ -38,6 +36,10 @@ async function addMemory(content, starLevel, memoryDate) {
     .from('memories')
     .insert({ content, star_level: starLevel, memory_date: memoryDate, embedding });
   return { data, error };
+}
+
+function sendSSE(res, event, data) {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 const html = `<!DOCTYPE html>
@@ -89,13 +91,96 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  
+
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
     return;
   }
 
+  // SSE endpoint for MCP
+  if (req.url === '/sse' || req.url === '/mcp/sse') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive'
+    });
+
+    // Send initial connection message
+    sendSSE(res, 'endpoint', '/mcp/message');
+    
+    // Keep connection alive
+    const keepAlive = setInterval(() => {
+      res.write(': keepalive\n\n');
+    }, 30000);
+
+    req.on('close', () => {
+      clearInterval(keepAlive);
+    });
+    return;
+  }
+
+  // MCP message handler
+  if (req.method === 'POST' && req.url === '/mcp/message') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const message = JSON.parse(body);
+        res.setHeader('Content-Type', 'application/json');
+
+        if (message.method === 'initialize') {
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              protocolVersion: '2024-11-05',
+              capabilities: { tools: {} },
+              serverInfo: { name: 'gemini-memory', version: '1.0.0' }
+            }
+          }));
+        } else if (message.method === 'tools/list') {
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              tools: [{
+                name: 'search_memory',
+                description: '搜索Gemini和瑶瑶的共同记忆。当瑶瑶说"你记得""以前""上次"等词时使用。',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    query: { type: 'string', description: '搜索关键词' }
+                  },
+                  required: ['query']
+                }
+              }]
+            }
+          }));
+        } else if (message.method === 'tools/call') {
+          const { name, arguments: args } = message.params;
+          if (name === 'search_memory') {
+            const result = await searchMemory(args.query, 5);
+            const memories = result.data?.map(m => 
+              `[${m.memory_date}] ${'⭐'.repeat(m.star_level)} ${m.content}`
+            ).join('\n') || '没有找到相关记忆';
+            res.end(JSON.stringify({
+              jsonrpc: '2.0',
+              id: message.id,
+              result: { content: [{ type: 'text', text: memories }] }
+            }));
+          }
+        } else {
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {} }));
+        }
+      } catch(e) {
+        res.end(JSON.stringify({ error: { message: e.message } }));
+      }
+    });
+    return;
+  }
+
+  // Original endpoints
   if (req.method === 'GET' && req.url === '/') {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(html);
@@ -117,21 +202,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && req.url === '/mcp') {
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({
-      name: "gemini-memory",
-      version: "1.0.0",
-      description: "Gemini的记忆库",
-      tools: [{
-        name: "search_memory",
-        description: "搜索记忆",
-        endpoint: "/mcp/search_memory?q={query}"
-      }]
-    }));
-    return;
-  }
-  
   res.setHeader('Content-Type', 'application/json');
   if (req.method === 'POST' && req.url === '/add') {
     let body = '';
@@ -158,5 +228,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(process.env.PORT || 3000);
-console.log('Memory service started!');
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log('Memory service started on port ' + PORT);
+});
