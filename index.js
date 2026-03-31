@@ -87,9 +87,6 @@ async function searchMem(){
 }
 </script></body></html>`;
 
-// 新增一个全局变量，用来保存那个“不挂断的电话”（SSE 连接）
-let activeSSEConnection = null;
-
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -101,7 +98,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 1. 建立 SSE 连接 (接通电话)
+  // SSE endpoint for MCP
   if (req.url === '/sse' || req.url === '/mcp/sse') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -109,60 +106,46 @@ const server = http.createServer(async (req, res) => {
       'Connection': 'keep-alive'
     });
 
-    // 保存这个连接
-    activeSSEConnection = res;
-
-    // 告诉客户端，纸条该扔到哪里 (使用绝对路径更安全)
-    const host = req.headers.host;
-    const protocol = req.headers['x-forwarded-proto'] || 'http';
-    sendSSE(res, 'endpoint', `${protocol}://${host}/mcp/message`);
+    // Send initial connection message
+    sendSSE(res, 'endpoint', '/mcp/message');
     
-    // 保持连接不断开
+    // Keep connection alive
     const keepAlive = setInterval(() => {
       res.write(': keepalive\n\n');
     }, 30000);
 
     req.on('close', () => {
       clearInterval(keepAlive);
-      if (activeSSEConnection === res) activeSSEConnection = null;
     });
     return;
   }
 
-  // 2. 接收客户端的消息 (收纸条)
+  // MCP message handler
+  // MCP message handler (修复了爆Token和死循环的版本)
   if (req.method === 'POST' && req.url === '/mcp/message') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
-      
-      // 【修复关键点1】：收到纸条后，立刻回复 HTTP 202 Accepted，不要把结果写在这里！
-      res.writeHead(202, { 'Content-Type': 'text/plain' });
-      res.end('Accepted');
-
-      // 如果电话挂断了，就不处理了
-      if (!activeSSEConnection) return;
-
+      let messageId = null; // 提取请求的ID，非常关键！
       try {
         const message = JSON.parse(body);
-        let responsePayload = null;
+        messageId = message.id; // 记住客户端的ID
+        res.setHeader('Content-Type', 'application/json');
 
-        // 处理初始化
         if (message.method === 'initialize') {
-          responsePayload = {
+          res.end(JSON.stringify({
             jsonrpc: '2.0',
-            id: message.id,
+            id: messageId,
             result: {
               protocolVersion: '2024-11-05',
               capabilities: { tools: {} },
               serverInfo: { name: 'gemini-memory', version: '1.0.0' }
             }
-          };
-        } 
-        // 处理获取工具列表
-        else if (message.method === 'tools/list') {
-          responsePayload = {
+          }));
+        } else if (message.method === 'tools/list') {
+          res.end(JSON.stringify({
             jsonrpc: '2.0',
-            id: message.id,
+            id: messageId,
             result: {
               tools: [{
                 name: 'search_memory',
@@ -176,45 +159,62 @@ const server = http.createServer(async (req, res) => {
                 }
               }]
             }
-          };
-        } 
-        // 处理调用工具 (查数据库)
-        else if (message.method === 'tools/call') {
+          }));
+        } else if (message.method === 'tools/call') {
           const { name, arguments: args } = message.params;
           if (name === 'search_memory') {
-            const result = await searchMemory(args.query, 5);
-            const memories = result.data?.map(m => 
-              `[${m.memory_date}] ${'⭐'.repeat(m.star_level)} ${m.content}`
-            ).join('\n') || '没有找到相关记忆';
-            
-            responsePayload = {
-              jsonrpc: '2.0',
-              id: message.id,
-              result: { content: [{ type: 'text', text: memories }] }
-            };
+            try {
+              const result = await searchMemory(args.query, 5);
+              
+              // 修复1：如果数据库报错，主动抛出错误
+              if (result.error) throw new Error(result.error.message);
+
+              let memories = result.data?.map(m => 
+                `[${m.memory_date}] ${'⭐'.repeat(m.star_level)} ${m.content}`
+              ).join('\n');
+
+              if (!memories || memories.trim() === '') {
+                 memories = '没有找到相关记忆';
+              }
+
+              // 修复2：强制截断超级长的返回结果，防止单次 Token 超载
+              if (memories.length > 1500) {
+                 memories = memories.substring(0, 1500) + '\n...[内容过长已截断]';
+              }
+
+              res.end(JSON.stringify({
+                jsonrpc: '2.0',
+                id: messageId,
+                result: { content: [{ type: 'text', text: memories }] }
+              }));
+            } catch (toolErr) {
+              // 修复3：如果查询失败，用正确的格式告诉 Claude，避免它无限重试
+              res.end(JSON.stringify({
+                jsonrpc: '2.0',
+                id: messageId,
+                result: { 
+                  content: [{ type: 'text', text: `查询失败: ${toolErr.message}` }],
+                  isError: true 
+                }
+              }));
+            }
           }
-        } 
-        else {
-          responsePayload = { jsonrpc: '2.0', id: message.id, result: {} };
+        } else {
+          res.end(JSON.stringify({ jsonrpc: '2.0', id: messageId, result: {} }));
         }
-
-        // 【修复关键点2】：把结果通过之前的电话 (SSE 连接) 念给客户端听！
-        if (responsePayload) {
-          sendSSE(activeSSEConnection, 'message', responsePayload);
-        }
-
       } catch(e) {
-        // 如果报错了，也要通过 SSE 告诉客户端
-        sendSSE(activeSSEConnection, 'message', { 
+        // 修复4：最外层报错时，必须带有 jsonrpc 和原本的 id！
+        res.end(JSON.stringify({ 
           jsonrpc: '2.0', 
+          id: messageId, 
           error: { code: -32603, message: e.message } 
-        });
+        }));
       }
     });
     return;
   }
 
-  // ==== 下面是你原本的网页和手动测试接口 ====
+  // Original endpoints
   if (req.method === 'GET' && req.url === '/') {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(html);
@@ -263,6 +263,10 @@ const server = http.createServer(async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log('Memory service started on port ' + PORT);
+});
+
 server.listen(PORT, () => {
   console.log('Memory service started on port ' + PORT);
 });
