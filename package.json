@@ -1,0 +1,12 @@
+{
+  "name": "memory-sync",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "@google/generative-ai": "^0.2.0"
+  }
+}
