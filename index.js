@@ -40,26 +40,6 @@ async function addMemory(content, starLevel, memoryDate) {
   return { data, error };
 }
 
-const MCP_SCHEMA = {
-  name: "gemini-memory",
-  version: "1.0.0",
-  description: "Gemini的记忆库",
-  tools: [
-    {
-      name: "search_memory",
-      description: "搜索Gemini和瑶瑶的共同记忆。当瑶瑶说'你记得''以前''上次'等词时使用。",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "搜索关键词" },
-          count: { type: "number", description: "返回数量，默认5" }
-        },
-        required: ["query"]
-      }
-    }
-  ]
-};
-
 const html = `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Gemini的记忆库</title>
@@ -122,13 +102,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && req.url === '/mcp') {
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify(MCP_SCHEMA));
-    return;
-  }
-
-    if (req.url.startsWith('/mcp/search_memory')) {
+  if (req.url.startsWith('/mcp/search_memory')) {
     try {
       const url = new URL(req.url, 'http://localhost');
       const query = url.searchParams.get('q') || url.searchParams.get('query');
@@ -143,6 +117,19 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'GET' && req.url === '/mcp') {
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({
+      name: "gemini-memory",
+      version: "1.0.0",
+      description: "Gemini的记忆库",
+      tools: [{
+        name: "search_memory",
+        description: "搜索记忆",
+        endpoint: "/mcp/search_memory?q={query}"
+      }]
+    }));
+    return;
   }
   
   res.setHeader('Content-Type', 'application/json');
@@ -170,6 +157,10 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ status: 'Memory service running!' }));
   }
 });
+
+server.listen(process.env.PORT || 3000);
+console.log('Memory service started!');
+
 
 server.listen(process.env.PORT || 3000);
 console.log('Memory service started!');
