@@ -160,4 +160,3 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(process.env.PORT || 3000);
 console.log('Memory service started!');
-console.log('Memory service started!');
