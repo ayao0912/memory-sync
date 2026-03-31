@@ -1,5 +1,4 @@
 import { createClient } from '@supabase/supabase-js';
-import { GoogleGenAI } from '@google/genai';
 import http from 'http';
 
 const supabase = createClient(
@@ -7,14 +6,20 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
-
 async function getEmbedding(text) {
-  const response = await ai.models.embedContent({
-    model: 'gemini-embedding-001',
-    contents: text
-  });
-  return response.embeddings[0].values;
+  const response = await fetch(
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=' + process.env.GOOGLE_API_KEY,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: { parts: [{ text: text }] }
+      })
+    }
+  );
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.embedding.values;
 }
 
 async function addMemory(content, starLevel, memoryDate) {
@@ -110,11 +115,6 @@ const server = http.createServer(async (req, res) => {
   } else {
     res.end(JSON.stringify({ status: 'Memory service running!' }));
   }
-});
-
-server.listen(process.env.PORT || 3000);
-console.log('Memory service started!');
-
 });
 
 server.listen(process.env.PORT || 3000);
