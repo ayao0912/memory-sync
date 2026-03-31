@@ -123,7 +123,7 @@ const server = http.createServer(async (req, res) => {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
-      let messageId = null; // 记住客户端发来的ID，这是防止死循环的关键
+      let messageId = null; 
       try {
         const message = JSON.parse(body);
         messageId = message.id || null;
@@ -183,12 +183,12 @@ const server = http.createServer(async (req, res) => {
                 result: { content: [{ type: 'text', text: memories }] }
               }));
             } catch (toolErr) {
-              // 【安全锁】：数据库报错时，用标准格式还给客户端，不要让它无限重试
+              // 【安全锁】：这里去掉了多余的斜杠，语法错误已修复
               res.end(JSON.stringify({
                 jsonrpc: '2.0',
                 id: messageId,
                 result: { 
-                  content: [{ type: 'text', text: \`查询失败: \${toolErr.message}\` }],
+                  content: [{ type: 'text', text: `查询失败: ${toolErr.message}` }],
                   isError: true 
                 }
               }));
