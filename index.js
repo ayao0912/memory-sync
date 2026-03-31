@@ -106,10 +106,8 @@ const server = http.createServer(async (req, res) => {
       'Connection': 'keep-alive'
     });
 
-    // Send initial connection message
     sendSSE(res, 'endpoint', '/mcp/message');
     
-    // Keep connection alive
     const keepAlive = setInterval(() => {
       res.write(': keepalive\n\n');
     }, 30000);
@@ -120,16 +118,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // MCP message handler
-  // MCP message handler (修复了爆Token和死循环的版本)
+  // MCP message handler (修复了爆Token和死循环的安全版本)
   if (req.method === 'POST' && req.url === '/mcp/message') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
-      let messageId = null; // 提取请求的ID，非常关键！
+      let messageId = null; // 记住客户端发来的ID，这是防止死循环的关键
       try {
         const message = JSON.parse(body);
-        messageId = message.id; // 记住客户端的ID
+        messageId = message.id || null;
         res.setHeader('Content-Type', 'application/json');
 
         if (message.method === 'initialize') {
@@ -165,8 +162,6 @@ const server = http.createServer(async (req, res) => {
           if (name === 'search_memory') {
             try {
               const result = await searchMemory(args.query, 5);
-              
-              // 修复1：如果数据库报错，主动抛出错误
               if (result.error) throw new Error(result.error.message);
 
               let memories = result.data?.map(m => 
@@ -177,7 +172,7 @@ const server = http.createServer(async (req, res) => {
                  memories = '没有找到相关记忆';
               }
 
-              // 修复2：强制截断超级长的返回结果，防止单次 Token 超载
+              // 【安全锁】：强制截断超级长的返回结果，防止单次 Token 爆炸
               if (memories.length > 1500) {
                  memories = memories.substring(0, 1500) + '\n...[内容过长已截断]';
               }
@@ -188,26 +183,29 @@ const server = http.createServer(async (req, res) => {
                 result: { content: [{ type: 'text', text: memories }] }
               }));
             } catch (toolErr) {
-              // 修复3：如果查询失败，用正确的格式告诉 Claude，避免它无限重试
+              // 【安全锁】：数据库报错时，用标准格式还给客户端，不要让它无限重试
               res.end(JSON.stringify({
                 jsonrpc: '2.0',
                 id: messageId,
                 result: { 
-                  content: [{ type: 'text', text: `查询失败: ${toolErr.message}` }],
+                  content: [{ type: 'text', text: \`查询失败: \${toolErr.message}\` }],
                   isError: true 
                 }
               }));
             }
+          } else {
+            res.end(JSON.stringify({ jsonrpc: '2.0', id: messageId, result: {} }));
           }
         } else {
           res.end(JSON.stringify({ jsonrpc: '2.0', id: messageId, result: {} }));
         }
       } catch(e) {
-        // 修复4：最外层报错时，必须带有 jsonrpc 和原本的 id！
+        // 【安全锁】：最外层网络或代码报错时，必须带有 jsonrpc 格式
+        res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ 
           jsonrpc: '2.0', 
           id: messageId, 
-          error: { code: -32603, message: e.message } 
+          error: { code: -32603, message: e.message || "Unknown Error" } 
         }));
       }
     });
@@ -263,10 +261,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log('Memory service started on port ' + PORT);
-});
-
 server.listen(PORT, () => {
   console.log('Memory service started on port ' + PORT);
 });
