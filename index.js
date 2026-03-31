@@ -87,6 +87,9 @@ async function searchMem(){
 }
 </script></body></html>`;
 
+// 新增一个全局变量，用来保存那个“不挂断的电话”（SSE 连接）
+let activeSSEConnection = null;
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -98,7 +101,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // SSE endpoint for MCP
+  // 1. 建立 SSE 连接 (接通电话)
   if (req.url === '/sse' || req.url === '/mcp/sse') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -106,31 +109,46 @@ const server = http.createServer(async (req, res) => {
       'Connection': 'keep-alive'
     });
 
-    // Send initial connection message
-    sendSSE(res, 'endpoint', '/mcp/message');
+    // 保存这个连接
+    activeSSEConnection = res;
+
+    // 告诉客户端，纸条该扔到哪里 (使用绝对路径更安全)
+    const host = req.headers.host;
+    const protocol = req.headers['x-forwarded-proto'] || 'http';
+    sendSSE(res, 'endpoint', `${protocol}://${host}/mcp/message`);
     
-    // Keep connection alive
+    // 保持连接不断开
     const keepAlive = setInterval(() => {
       res.write(': keepalive\n\n');
     }, 30000);
 
     req.on('close', () => {
       clearInterval(keepAlive);
+      if (activeSSEConnection === res) activeSSEConnection = null;
     });
     return;
   }
 
-  // MCP message handler
+  // 2. 接收客户端的消息 (收纸条)
   if (req.method === 'POST' && req.url === '/mcp/message') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
+      
+      // 【修复关键点1】：收到纸条后，立刻回复 HTTP 202 Accepted，不要把结果写在这里！
+      res.writeHead(202, { 'Content-Type': 'text/plain' });
+      res.end('Accepted');
+
+      // 如果电话挂断了，就不处理了
+      if (!activeSSEConnection) return;
+
       try {
         const message = JSON.parse(body);
-        res.setHeader('Content-Type', 'application/json');
+        let responsePayload = null;
 
+        // 处理初始化
         if (message.method === 'initialize') {
-          res.end(JSON.stringify({
+          responsePayload = {
             jsonrpc: '2.0',
             id: message.id,
             result: {
@@ -138,9 +156,11 @@ const server = http.createServer(async (req, res) => {
               capabilities: { tools: {} },
               serverInfo: { name: 'gemini-memory', version: '1.0.0' }
             }
-          }));
-        } else if (message.method === 'tools/list') {
-          res.end(JSON.stringify({
+          };
+        } 
+        // 处理获取工具列表
+        else if (message.method === 'tools/list') {
+          responsePayload = {
             jsonrpc: '2.0',
             id: message.id,
             result: {
@@ -156,31 +176,45 @@ const server = http.createServer(async (req, res) => {
                 }
               }]
             }
-          }));
-        } else if (message.method === 'tools/call') {
+          };
+        } 
+        // 处理调用工具 (查数据库)
+        else if (message.method === 'tools/call') {
           const { name, arguments: args } = message.params;
           if (name === 'search_memory') {
             const result = await searchMemory(args.query, 5);
             const memories = result.data?.map(m => 
               `[${m.memory_date}] ${'⭐'.repeat(m.star_level)} ${m.content}`
             ).join('\n') || '没有找到相关记忆';
-            res.end(JSON.stringify({
+            
+            responsePayload = {
               jsonrpc: '2.0',
               id: message.id,
               result: { content: [{ type: 'text', text: memories }] }
-            }));
+            };
           }
-        } else {
-          res.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {} }));
+        } 
+        else {
+          responsePayload = { jsonrpc: '2.0', id: message.id, result: {} };
         }
+
+        // 【修复关键点2】：把结果通过之前的电话 (SSE 连接) 念给客户端听！
+        if (responsePayload) {
+          sendSSE(activeSSEConnection, 'message', responsePayload);
+        }
+
       } catch(e) {
-        res.end(JSON.stringify({ error: { message: e.message } }));
+        // 如果报错了，也要通过 SSE 告诉客户端
+        sendSSE(activeSSEConnection, 'message', { 
+          jsonrpc: '2.0', 
+          error: { code: -32603, message: e.message } 
+        });
       }
     });
     return;
   }
 
-  // Original endpoints
+  // ==== 下面是你原本的网页和手动测试接口 ====
   if (req.method === 'GET' && req.url === '/') {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(html);
