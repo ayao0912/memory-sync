@@ -128,21 +128,21 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/mcp/search_memory') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
-      try {
-        const { query, count } = JSON.parse(body);
-        const result = await searchMemory(query, count || 5);
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify(result));
-      } catch(e) {
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: { message: e.message } }));
-      }
-    });
+    if (req.url.startsWith('/mcp/search_memory')) {
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      const query = url.searchParams.get('q') || url.searchParams.get('query');
+      const count = parseInt(url.searchParams.get('count')) || 5;
+      const result = await searchMemory(query, count);
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(result));
+    } catch(e) {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: { message: e.message } }));
+    }
     return;
+  }
+
   }
   
   res.setHeader('Content-Type', 'application/json');
