@@ -264,3 +264,26 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log('Memory service started on port ' + PORT);
 });
+
+// 显示所有记忆（纯文本）
+if (req.method === 'GET' && req.url === '/memories') {
+  try {
+    const { data } = await supabase
+      .from('memories')
+      .select('content')
+      .order('created_at', { ascending: false });
+    
+    let text = '';
+    for (const m of data) {
+      text += m.content + '\n\n---\n\n';
+    }
+    
+    res.writeHead(200, {'Content-Type': 'text/plain; charset=utf-8'});
+    res.end(text || '暂无记忆');
+  } catch (e) {
+    res.writeHead(500);
+    res.end('Error: ' + e.message);
+  }
+  return;
+}
+
